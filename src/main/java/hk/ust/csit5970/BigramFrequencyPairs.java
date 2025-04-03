@@ -6,8 +6,10 @@ import org.apache.hadoop.io.*;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.Mapper;
 import org.apache.hadoop.mapreduce.Reducer;
+import org.apache.hadoop.mapreduce.Partitioner;
 import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
+import org.apache.commons.cli.*;
 
 import java.io.IOException;
 import java.util.HashMap;
@@ -24,10 +26,8 @@ public class BigramFrequencyPairs {
 
             for (int i = 0; i < words.length - 1; i++) {
                 if (words[i].isEmpty() || words[i + 1].isEmpty()) continue;
-                PairOfStrings bigram = new PairOfStrings(words[i], words[i + 1]);
-                context.write(bigram, one); // Bigram count
-                PairOfStrings firstWord = new PairOfStrings(words[i], "*"); // First word total
-                context.write(firstWord, one);
+                context.write(new PairOfStrings(words[i], words[i + 1]), one);
+                context.write(new PairOfStrings(words[i], "*"), one);
             }
         }
     }
@@ -43,36 +43,51 @@ public class BigramFrequencyPairs {
         }
     }
 
-    public static class BigramReducer extends Reducer<PairOfStrings, IntWritable, Text, FloatWritable> {
-        private HashMap<String, Integer> firstWordTotals = new HashMap<String, Integer>();
+    public static class BigramReducer extends Reducer<PairOfStrings, IntWritable, Text, DoubleWritable> {
+        private HashMap<String, Integer> firstWordTotals = new HashMap<>();
+        private HashMap<String, HashMap<String, Integer>> bigramCounts = new HashMap<>();
 
         @Override
         protected void reduce(PairOfStrings key, Iterable<IntWritable> values, Context context) throws IOException, InterruptedException {
+            String w1 = key.getLeftElement();
+            String w2 = key.getRightElement();
             int sum = 0;
             for (IntWritable val : values) {
                 sum += val.get();
             }
 
-            String first = key.getLeftElement();
-            String second = key.getRightElement();
-
-            if (second.equals("*")) {
-                firstWordTotals.put(first, sum);
-                context.write(new Text(first + "\t"), new FloatWritable(sum));
+            if (w2.equals("*")) {
+                firstWordTotals.put(w1, sum);
             } else {
-                Integer total = firstWordTotals.get(first);
-                if (total != null && total > 0) {
-                    float frequency = (float) sum / total;
-                    context.write(new Text(first + "\t" + second), new FloatWritable(frequency));
+                HashMap<String, Integer> counts = bigramCounts.get(w1);
+                if (counts == null) {
+                    counts = new HashMap<>();
+                    bigramCounts.put(w1, counts);
+                }
+                counts.put(w2, sum);
+            }
+        }
+
+        @Override
+        protected void cleanup(Context context) throws IOException, InterruptedException {
+            for (String w1 : firstWordTotals.keySet()) {
+                int total = firstWordTotals.get(w1);
+                context.write(new Text(w1), new DoubleWritable((double) total));
+                HashMap<String, Integer> bigrams = bigramCounts.get(w1);
+                if (bigrams != null) {
+                    for (String w2 : bigrams.keySet()) {
+                        double freq = (double) bigrams.get(w2) / total;
+                        context.write(new Text(w1 + "\t" + w2), new DoubleWritable(freq));
+                    }
                 }
             }
         }
     }
 
-    public static class BigramPartitioner extends org.apache.hadoop.mapreduce.Partitioner<PairOfStrings, IntWritable> {
+    public static class BigramPartitioner extends Partitioner<PairOfStrings, IntWritable> {
         @Override
         public int getPartition(PairOfStrings key, IntWritable value, int numPartitions) {
-            return Math.abs(key.getLeftElement().hashCode() % numPartitions);
+            return (key.getLeftElement().hashCode() & Integer.MAX_VALUE) % numPartitions;
         }
     }
 
@@ -89,22 +104,26 @@ public class BigramFrequencyPairs {
         job.setMapOutputKeyClass(PairOfStrings.class);
         job.setMapOutputValueClass(IntWritable.class);
         job.setOutputKeyClass(Text.class);
-        job.setOutputValueClass(FloatWritable.class);
+        job.setOutputValueClass(DoubleWritable.class);
 
-        // Parse command-line arguments
-        String inputPath = null;
-        String outputPath = null;
-        int numReducers = 1; // Default
+        Options options = new Options();
+        options.addOption(OptionBuilder.withArgName("path").hasArg().withDescription("input path").create("input"));
+        options.addOption(OptionBuilder.withArgName("path").hasArg().withDescription("output path").create("output"));
+        options.addOption(OptionBuilder.withArgName("num").hasArg().withDescription("number of reducers").create("numReducers"));
 
-        for (int i = 0; i < args.length; i++) {
-            if ("-input".equals(args[i])) {
-                inputPath = args[++i];
-            } else if ("-output".equals(args[i])) {
-                outputPath = args[++i];
-            } else if ("-numReducers".equals(args[i])) {
-                numReducers = Integer.parseInt(args[++i]);
-            }
+        CommandLine cmdline;
+        try {
+            cmdline = new GnuParser().parse(options, args);
+        } catch (ParseException e) {
+            System.err.println("Error parsing command line: " + e.getMessage());
+            new HelpFormatter().printHelp("BigramFrequencyPairs", options);
+            System.exit(1);
+            return;
         }
+
+        String inputPath = cmdline.getOptionValue("input");
+        String outputPath = cmdline.getOptionValue("output");
+        int numReducers = cmdline.hasOption("numReducers") ? Integer.parseInt(cmdline.getOptionValue("numReducers")) : 1;
 
         if (inputPath == null || outputPath == null) {
             System.err.println("Usage: BigramFrequencyPairs -input <input> -output <output> [-numReducers <n>]");

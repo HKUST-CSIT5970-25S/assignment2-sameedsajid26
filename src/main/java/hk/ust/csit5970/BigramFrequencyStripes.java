@@ -10,6 +10,7 @@ import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
 
 import java.io.IOException;
+import java.util.Iterator;
 import java.util.Map;
 
 public class BigramFrequencyStripes {
@@ -25,7 +26,10 @@ public class BigramFrequencyStripes {
             for (int i = 0; i < words.length - 1; i++) {
                 if (words[i].isEmpty() || words[i + 1].isEmpty()) continue;
                 stripe.clear();
-                stripe.put(words[i + 1], 1); // Integer, not IntWritable
+                stripe.put(words[i + 1], 1); // Bigram
+                context.write(new Text(words[i]), stripe);
+                stripe.clear();
+                stripe.put("*", 1); // Word count
                 context.write(new Text(words[i]), stripe);
             }
         }
@@ -37,39 +41,61 @@ public class BigramFrequencyStripes {
         @Override
         protected void reduce(Text key, Iterable<HashMapStringIntWritable> values, Context context) throws IOException, InterruptedException {
             resultStripe.clear();
-            for (HashMapStringIntWritable stripe : values) {
-                for (Map.Entry<String, Integer> entry : stripe.entrySet()) {
-                    resultStripe.increment(entry.getKey(), entry.getValue());
+            Iterator<HashMapStringIntWritable> iter = values.iterator();
+            while (iter.hasNext()) {
+                HashMapStringIntWritable stripe = iter.next();
+                Iterator<Map.Entry<String, Integer>> entries = stripe.entrySet().iterator();
+                while (entries.hasNext()) {
+                    Map.Entry<String, Integer> entry = entries.next();
+                    String w2 = entry.getKey();
+                    int count = entry.getValue();
+                    Integer existing = resultStripe.get(w2);
+                    if (existing == null) {
+                        resultStripe.put(w2, count);
+                    } else {
+                        resultStripe.put(w2, existing + count);
+                    }
                 }
             }
             context.write(key, resultStripe);
         }
     }
 
-    public static class BigramReducer extends Reducer<Text, HashMapStringIntWritable, Text, FloatWritable> {
+    public static class BigramReducer extends Reducer<Text, HashMapStringIntWritable, Text, DoubleWritable> {
         private HashMapStringIntWritable totalStripe = new HashMapStringIntWritable();
 
         @Override
         protected void reduce(Text key, Iterable<HashMapStringIntWritable> values, Context context) throws IOException, InterruptedException {
             totalStripe.clear();
-            for (HashMapStringIntWritable stripe : values) {
-                for (Map.Entry<String, Integer> entry : stripe.entrySet()) {
-                    totalStripe.increment(entry.getKey(), entry.getValue());
+            int totalCount = 0;
+
+            Iterator<HashMapStringIntWritable> iter = values.iterator();
+            while (iter.hasNext()) {
+                HashMapStringIntWritable stripe = iter.next();
+                Iterator<Map.Entry<String, Integer>> entries = stripe.entrySet().iterator();
+                while (entries.hasNext()) {
+                    Map.Entry<String, Integer> entry = entries.next();
+                    String w2 = entry.getKey();
+                    int count = entry.getValue();
+                    if (w2.equals("*")) {
+                        totalCount += count;
+                    } else {
+                        Integer existing = totalStripe.get(w2);
+                        if (existing == null) {
+                            totalStripe.put(w2, count);
+                        } else {
+                            totalStripe.put(w2, existing + count);
+                        }
+                    }
                 }
             }
 
-            int totalCount = 0;
-            for (Integer count : totalStripe.values()) {
-                totalCount += count;
-            }
-
-            // Output total count
-            context.write(new Text(key.toString() + "\t"), new FloatWritable(totalCount));
-
-            // Output relative frequencies
-            for (Map.Entry<String, Integer> entry : totalStripe.entrySet()) {
-                float frequency = (float) entry.getValue() / totalCount;
-                context.write(new Text(key.toString() + "\t" + entry.getKey()), new FloatWritable(frequency));
+            context.write(new Text(key.toString()), new DoubleWritable((double) totalCount));
+            Iterator<Map.Entry<String, Integer>> totalEntries = totalStripe.entrySet().iterator();
+            while (totalEntries.hasNext()) {
+                Map.Entry<String, Integer> entry = totalEntries.next();
+                double frequency = (double) entry.getValue() / totalCount;
+                context.write(new Text(key.toString() + "\t" + entry.getKey()), new DoubleWritable(frequency));
             }
         }
     }
@@ -86,7 +112,7 @@ public class BigramFrequencyStripes {
         job.setMapOutputKeyClass(Text.class);
         job.setMapOutputValueClass(HashMapStringIntWritable.class);
         job.setOutputKeyClass(Text.class);
-        job.setOutputValueClass(FloatWritable.class);
+        job.setOutputValueClass(DoubleWritable.class);
 
         String inputPath = null;
         String outputPath = null;
