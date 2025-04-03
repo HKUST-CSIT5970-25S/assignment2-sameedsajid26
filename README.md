@@ -287,6 +287,8 @@ $ hadoop jar target/assignment-2-1.0-SNAPSHOT.jar hk.ust.csit5970.CORStripes -in
 ```
 In the command above, we have specified the input file, the output path, and the number of reducers. You are free to try something different.
 
+## I have tried my programs using numReducers 1
+
 > **Hint 1:**
 > In this problem, you are required to do MapReduce twice.
 > In the first pass, MapReduce produces a middle result that contains the frequency of each word (i.e., Freq(A)).
